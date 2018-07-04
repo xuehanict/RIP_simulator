@@ -94,7 +94,8 @@ func (r *router) handleUpdate(u *update) error {
 	return nil
 }
 
-func (r *router) start() {
+func (r *router) start(wg *sync.WaitGroup) {
+	defer wg.Done()
 	for {
 		select {
 		case update := <-r.Update:
@@ -144,16 +145,165 @@ func main() {
 
 	fmt.Printf("RIP简易版模拟器\n" +
 		"初始节点信息:\n" +
-		"1 <-----> 2 <----> 3 <-----> 4 \n" +
-		" |                         |    \n" +
-		" |-----------> 5 <---------| \n ")
+		"1 <-----> 2 <----> 3 <-----> 4 \n")
+
+	r1 := newRouter(1,  globalUpdateChan)
+	r2 := newRouter(2,globalUpdateChan)
+	r3 := newRouter(3, globalUpdateChan)
+	r4 := newRouter(4, globalUpdateChan)
+
+	r1.RouteTable.Entries = []routeTableEntry{
+		{
+			TargetId: 2,
+			NextHop: 2,
+			Distance: 1,
+		},
+		{
+			TargetId: 3,
+			NextHop: 2,
+			Distance: 2,
+		},
+		{
+			TargetId: 4,
+			NextHop: 2,
+			Distance: 3,
+		},
+	}
+	r2.RouteTable.Entries = []routeTableEntry{
+		{
+			TargetId: 1,
+			NextHop: 1,
+			Distance: 1,
+		},
+		{
+			TargetId: 3,
+			NextHop: 3,
+			Distance: 1,
+		},
+		{
+			TargetId: 4,
+			NextHop: 3,
+			Distance: 2,
+		},
+	}
+	r3.RouteTable.Entries = []routeTableEntry{
+		{
+			TargetId: 1,
+			NextHop: 2,
+			Distance: 2,
+		},
+		{
+			TargetId:2,
+			NextHop: 2,
+			Distance:1,
+		},
+		{
+			TargetId: 4,
+			NextHop: 4,
+			Distance: 1,
+		},
+	}
+	r4.RouteTable.Entries = []routeTableEntry{
+		{
+			TargetId: 1,
+			NextHop: 3,
+			Distance: 3,
+		},
+		{
+			TargetId: 2,
+			NextHop: 3,
+			Distance:2,
+		},
+		{
+			TargetId:3,
+			NextHop:3,
+			Distance: 1,
+		},
+	}
+	routerMap[1] = r1
+	routerMap[2] = r2
+	routerMap[3] = r3
+	routerMap[4] = r4
+	wg.Add(4)
+	go r1.start(&wg)
+	go r2.start(&wg)
+	go r3.start(&wg)
+	go r4.start(&wg)
 
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print("输入1, 打印路由表" +
+		fmt.Print(
+			"输入1, 打印路由表" +
 			"输入2,添加节点" +
 			"输入3,添加链路" +
 			"输入其他无效作废")
 
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("Error input, please check it")
+			continue
+		}
+		switch input {
+		case "1\r\n":
+			for _, router := range routerMap{
+				fmt.Printf("Router %d table is :\n", router.ID)
+				fmt.Print(
+					"Destination     nextHop    distance\n" +
+						"----------------------\n")
+				for _, entry := range router.RouteTable.Entries {
+					fmt.Printf("%d     %d    %d", entry.TargetId,
+						entry.NextHop, entry.Distance)
+				}
+			}
+			break
+		case "2\r\n":
+			var id RouterID
+			fmt.Scanf("%d", &id)
+			_, ok := routerMap[id]
+			if ok {
+				fmt.Println("this id is exist ,please reinput")
+				break
+			}
+			router := newRouter(id, globalUpdateChan)
+			routerMap[id] = router
+
+			wg.Add(1)
+			go router.start(&wg)
+			break
+		case "3\r\n":
+			var source, dest RouterID
+			fmt.Scanf("%d,%d", &source, &dest)
+			sourceRouter, ok := routerMap[source]
+			if !ok {
+				fmt.Println("cann't find the router")
+			}
+			destRouter, ok := routerMap[dest]
+			if !ok {
+				fmt.Println("cann't find the router")
+			}
+			// 因为添加了水平分割，所以两头都发
+			sourceRouter.sendUpdate(&update{
+				targetRouterID: dest,
+				sourceRouterID: source,
+				routeTableEntry: &routeTableEntry{
+					Distance: 0,
+					NextHop: dest,
+					TargetId:dest,
+				},
+			})
+			destRouter.sendUpdate(&update{
+				targetRouterID: source,
+				sourceRouterID: dest,
+				routeTableEntry: &routeTableEntry{
+					Distance: 0,
+					NextHop: source,
+					TargetId:source,
+				},
+			})
+			// TODO(xuehan): check the link if exist
+		default:
+			fmt.Printf("Error input, please reinput")
+			break
+		}
 	}
 }
