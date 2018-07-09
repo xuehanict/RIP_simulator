@@ -3,8 +3,9 @@ package main
 import (
 	"fmt"
 	"sync"
-	"bufio"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 type RouterID int
@@ -47,7 +48,7 @@ func (r *router) handleUpdate(u *update) error {
 	if distance >= 16 {
 		distance = 16
 	}
-
+	ifUpdate := false
 	isExist := false
 	for _, entry := range r.RouteTable.Entries {
 		// We find the entry, so just update it.
@@ -55,10 +56,12 @@ func (r *router) handleUpdate(u *update) error {
 			isExist = true
 			if entry.NextHop == nextHop {
 				entry.Distance = distance
+				ifUpdate = true
 			} else {
 				if entry.Distance > distance {
 					entry.NextHop = nextHop
 					entry.Distance = distance
+					ifUpdate = true
 				}
 			}
 		}
@@ -71,26 +74,28 @@ func (r *router) handleUpdate(u *update) error {
 			Distance: distance,
 		}
 		r.RouteTable.Entries = append(r.RouteTable.Entries, newEntry)
+		ifUpdate = true
 	}
 
 	// Broadcast this update to his neighbours
-	for _, entry := range r.RouteTable.Entries {
-		if entry.NextHop == entry.TargetId &&
-			entry.Distance == 1 &&
-			entry.TargetId != u.sourceRouterID {
+	if ifUpdate {
+		for _, entry := range r.RouteTable.Entries {
+			if entry.NextHop == entry.TargetId &&
+				entry.Distance == 1 &&
+				entry.TargetId != u.sourceRouterID {
 
-			update := &update{
-				sourceRouterID: r.ID,
-				targetRouterID: entry.TargetId,
-				routeTableEntry: &routeTableEntry{
-					TargetId: targetID,
-					Distance: distance,
-				},
+				update := &update{
+					sourceRouterID: r.ID,
+					targetRouterID: entry.TargetId,
+					routeTableEntry: &routeTableEntry{
+						TargetId: targetID,
+						Distance: distance,
+					},
+				}
+				r.sendUpdate(update)
 			}
-			r.sendUpdate(update)
 		}
 	}
-
 	return nil
 }
 
@@ -101,7 +106,8 @@ func (r *router) start(wg *sync.WaitGroup) {
 		case update := <-r.Update:
 			r.handleUpdate(update)
 		case <-r.quit:
-			fmt.Println("router %d is closed.", r.ID)
+			fmt.Printf("router %d is closed.\n", r.ID)
+			fmt.Println("-1")
 			return
 		}
 	}
@@ -111,17 +117,16 @@ func (r *router) stop() {
 	close(r.quit)
 }
 
-func newRouter(id RouterID, globalUpdate chan *update) *router{
+func newRouter(id RouterID, globalUpdate chan *update) *router {
 	newRouter := &router{
 		ID:           id,
 		Update:       make(chan *update),
 		RouteTable:   routeTable{},
 		GlobalUpdate: globalUpdate,
-		quit:		  make(chan int),
+		quit:         make(chan int),
 	}
 	return newRouter
 }
-
 
 func main() {
 	wg := sync.WaitGroup{}
@@ -130,6 +135,7 @@ func main() {
 	routerMap := make(map[RouterID]*router)
 
 	wg.Add(1)
+	fmt.Println("update 守护线程启动 +1")
 	go func() {
 		defer wg.Done()
 		for {
@@ -138,85 +144,105 @@ func main() {
 				router := routerMap[update.targetRouterID]
 				router.Update <- update
 			case <-quit:
-				break
+				fmt.Println("update 守护线程结束 -1")
+				return
 			}
 		}
+	}()
+
+//	wg.Add(1)
+//	fmt.Println("信号监听 +1")
+	go func() {
+//		defer wg.Done()
+		c := make(chan os.Signal)
+		signal.Notify(c, syscall.SIGHUP,
+			syscall.SIGINT, syscall.SIGTERM,
+			syscall.SIGQUIT)
+		<- c
+		fmt.Println("收到退出信号，开始退出")
+		for _, router := range routerMap{
+			router.quit <- 0
+		}
+		quit <- 0
+		wg.Wait()
+		os.Exit(0)
+		//fmt.Println("信号监听结束 -1")
 	}()
 
 	fmt.Printf("RIP简易版模拟器\n" +
 		"初始节点信息:\n" +
 		"1 <-----> 2 <----> 3 <-----> 4 \n")
 
-	r1 := newRouter(1,  globalUpdateChan)
-	r2 := newRouter(2,globalUpdateChan)
+	r1 := newRouter(1, globalUpdateChan)
+	r2 := newRouter(2, globalUpdateChan)
 	r3 := newRouter(3, globalUpdateChan)
 	r4 := newRouter(4, globalUpdateChan)
 
 	r1.RouteTable.Entries = []routeTableEntry{
 		{
 			TargetId: 2,
-			NextHop: 2,
+			NextHop:  2,
 			Distance: 1,
 		},
 		{
 			TargetId: 3,
-			NextHop: 2,
+			NextHop:  2,
 			Distance: 2,
 		},
 		{
 			TargetId: 4,
-			NextHop: 2,
+			NextHop:  2,
 			Distance: 3,
 		},
 	}
 	r2.RouteTable.Entries = []routeTableEntry{
 		{
 			TargetId: 1,
-			NextHop: 1,
+			NextHop:  1,
 			Distance: 1,
 		},
 		{
 			TargetId: 3,
-			NextHop: 3,
+			NextHop:  3,
 			Distance: 1,
 		},
 		{
 			TargetId: 4,
-			NextHop: 3,
+			NextHop:  3,
 			Distance: 2,
 		},
 	}
 	r3.RouteTable.Entries = []routeTableEntry{
 		{
 			TargetId: 1,
-			NextHop: 2,
+			NextHop:  2,
 			Distance: 2,
 		},
 		{
-			TargetId:2,
-			NextHop: 2,
-			Distance:1,
+			TargetId: 2,
+			NextHop:  2,
+			Distance: 1,
 		},
 		{
 			TargetId: 4,
-			NextHop: 4,
+			NextHop:  4,
 			Distance: 1,
 		},
 	}
 	r4.RouteTable.Entries = []routeTableEntry{
 		{
 			TargetId: 1,
-			NextHop: 3,
+			NextHop:  3,
 			Distance: 3,
 		},
 		{
 			TargetId: 2,
-			NextHop: 3,
-			Distance:2,
+			NextHop:  3,
+			Distance: 2,
 		},
 		{
-			TargetId:3,
-			NextHop:3,
+			TargetId: 3,
+			NextHop:  3,
 			Distance: 1,
 		},
 	}
@@ -224,39 +250,40 @@ func main() {
 	routerMap[2] = r2
 	routerMap[3] = r3
 	routerMap[4] = r4
+
 	wg.Add(4)
+	fmt.Println("路由器启动 +4")
+
 	go r1.start(&wg)
 	go r2.start(&wg)
 	go r3.start(&wg)
 	go r4.start(&wg)
 
-	reader := bufio.NewReader(os.Stdin)
+	//reader := bufio.NewReader(os.Stdin)
+	var input int
 	for {
 		fmt.Print(
 			"输入1, 打印路由表" +
-			"输入2,添加节点" +
-			"输入3,添加链路" +
-			"输入其他无效作废")
+				"输入2,添加节点" +
+				"输入3,添加链路" +
+				"输入其他无效作废\n")
 
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println("Error input, please check it")
-			continue
-		}
+		//input, err := reader.ReadString('\n')
+		fmt.Scanf("%d", &input)
 		switch input {
-		case "1\r\n":
-			for _, router := range routerMap{
+		case 1:
+			for _, router := range routerMap {
 				fmt.Printf("Router %d table is :\n", router.ID)
 				fmt.Print(
 					"Destination     nextHop    distance\n" +
 						"----------------------\n")
 				for _, entry := range router.RouteTable.Entries {
-					fmt.Printf("%d     %d    %d", entry.TargetId,
+					fmt.Printf("%d     %d    %d\n", entry.TargetId,
 						entry.NextHop, entry.Distance)
 				}
 			}
 			break
-		case "2\r\n":
+		case 2:
 			var id RouterID
 			fmt.Scanf("%d", &id)
 			_, ok := routerMap[id]
@@ -270,7 +297,7 @@ func main() {
 			wg.Add(1)
 			go router.start(&wg)
 			break
-		case "3\r\n":
+		case 3:
 			var source, dest RouterID
 			fmt.Scanf("%d,%d", &source, &dest)
 			sourceRouter, ok := routerMap[source]
@@ -287,8 +314,8 @@ func main() {
 				sourceRouterID: source,
 				routeTableEntry: &routeTableEntry{
 					Distance: 0,
-					NextHop: dest,
-					TargetId:dest,
+					NextHop:  dest,
+					TargetId: dest,
 				},
 			})
 			destRouter.sendUpdate(&update{
@@ -296,8 +323,8 @@ func main() {
 				sourceRouterID: dest,
 				routeTableEntry: &routeTableEntry{
 					Distance: 0,
-					NextHop: source,
-					TargetId:source,
+					NextHop:  source,
+					TargetId: source,
 				},
 			})
 			// TODO(xuehan): check the link if exist
@@ -306,4 +333,5 @@ func main() {
 			break
 		}
 	}
+	// wg.Wait()
 }
